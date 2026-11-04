@@ -141,6 +141,7 @@ input[type=search]{width:100%;font:inherit;font-size:18px;color:var(--ink);backg
 
 <div id="tools">
   <button class="tb" id="t-route" aria-label="Plan a fun ride"><svg viewBox="0 0 24 24"><circle cx="6" cy="19" r="2.5"/><path d="M8.5 19H16a3.5 3.5 0 0 0 0-7H8a3.5 3.5 0 0 1 0-7h7.5"/><path d="M18 5l2 0" /><circle cx="18" cy="5" r="2"/></svg></button>
+  <button class="tb" id="t-gas" aria-label="Nearest gas"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="10" height="18" rx="1.5"/><path d="M7 7h4v4H7zM2.5 21h13M14 9h2a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 0 3 0V8l-3-3"/></svg></button>
   <button class="tb rec" id="t-rec" aria-label="Record ride"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></button>
   <button class="tb" id="t-view" aria-label="Switch full map / radar"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><rect x="5.5" y="11" width="8" height="6.5" rx="1.5"/></svg></button>
   <button class="tb" id="t-more" aria-label="Rides and settings"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
@@ -209,6 +210,10 @@ map.on('load',()=>{
   map.addLayer({id:'trail',type:'line',source:'trail',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#f0b429','line-opacity':.55,'line-width':['interpolate',['linear'],['zoom'],10,2,18,6]}});
   map.addLayer({id:'route-case',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#2a0d3d','line-width':['interpolate',['linear'],['zoom'],10,5,18,16]}});
   map.addLayer({id:'route',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':css('--way'),'line-width':['interpolate',['linear'],['zoom'],10,3,18,11]}});
+  // gas station blips straight from the map tiles (OpenStreetMap amenity=fuel), drawn like the radar's pump icon
+  map.addImage('pump',pumpIcon(),{pixelRatio:2});
+  map.addLayer({id:'gas',type:'symbol',source:'omt','source-layer':'poi',minzoom:12.5,filter:['all',['==',['get','class'],'fuel'],['!=',['get','subclass'],'charging_station']],
+    layout:{'icon-image':'pump','icon-size':['interpolate',['linear'],['zoom'],12.5,.75,17,1.15],'icon-allow-overlap':true,'icon-pitch-alignment':'viewport','icon-rotation-alignment':'viewport'}});
   if(route)showRoute();
   // keep the map credit folded into its (i) button so it doesn't cover the road
   const at=document.querySelector('.maplibregl-ctrl-attrib');if(at)at.classList.remove('maplibregl-compact-show');
@@ -343,6 +348,56 @@ function routeProgress(){if(!route||!me)return 0;const c=route.coords;route.idx=
   if(best<80)route.idx=bi;return route.idx/(c.length-1)}
 $('rb-x').onclick=()=>{route=null;showRoute();toast('Route cleared')};
 function fit(coords){const b=coords.reduce((b,c)=>b.extend(c),new maplibregl.LngLatBounds(coords[0],coords[0]));stopFollow();map.fitBounds(b,{padding:{top:80,bottom:260,left:40,right:70},pitch:0,bearing:0,duration:800})}
+
+/* ---------------- gas stations ---------------- */
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function pumpIcon(){
+  const s=48,c=document.createElement('canvas');c.width=c.height=s;const g=c.getContext('2d');
+  g.fillStyle='#0b0d0e';g.beginPath();g.arc(24,24,21,0,7);g.fill();g.lineWidth=2.5;g.strokeStyle='rgba(255,255,255,.8)';g.stroke();
+  g.fillStyle='#fff';g.fillRect(15,13,12,22);g.fillRect(12.5,33,17,3);g.fillStyle='#0b0d0e';g.fillRect(17.5,16,7,6);
+  g.strokeStyle='#fff';g.lineWidth=2.4;g.lineCap='round';g.lineJoin='round';g.beginPath();g.moveTo(27,20);g.lineTo(31,20);g.quadraticCurveTo(32.5,20,32.5,22);g.lineTo(32.5,29);g.quadraticCurveTo(32.5,31.5,34.5,31.5);g.quadraticCurveTo(36.5,31.5,36.5,29);g.lineTo(36.5,18);g.lineTo(34,15.5);g.stroke();
+  return g.getImageData(0,0,s,s);
+}
+// two sources: the stations already in the loaded map tiles (instant), plus OpenStreetMap's Overpass API for a wider
+// search (often slow), which fills in more when it answers
+const gas={list:[],at:null};
+function gasFromTags(t,pos){return{pos,name:t.brand||t.name||'Gas station',addr:[t['addr:housenumber'],t['addr:street']].filter(Boolean).join(' ')||t['addr:city']||'',h24:t.opening_hours==='24/7'}}
+const gasKey=g=>g.pos.map(v=>v.toFixed(3)).join();
+function dedupe(list){const seen=new Set();return list.filter(g=>{const k=gasKey(g);return seen.has(k)?false:seen.add(k)})}
+function tileGas(){
+  try{return dedupe(map.querySourceFeatures('omt',{sourceLayer:'poi',filter:['all',['==',['get','class'],'fuel'],['!=',['get','subclass'],'charging_station']]})
+    .filter(f=>f.geometry.type==='Point').map(f=>gasFromTags(f.properties,f.geometry.coordinates)))}catch(e){return[]}
+}
+async function overpassGas(c){
+  if(gas.at&&dist(gas.at,c)<3000)return gas.list;
+  const q=`[out:json][timeout:25];nwr["amenity"="fuel"](around:12000,${c[1].toFixed(5)},${c[0].toFixed(5)});out center tags 200;`;
+  const ac=new AbortController(),t=setTimeout(()=>ac.abort(),45000);
+  try{const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q),signal:ac.signal});
+    if(!r.ok)throw new Error('busy');const j=await r.json();
+    gas.list=j.elements.map(e=>gasFromTags(e.tags||{},e.center?[e.center.lon,e.center.lat]:[e.lon,e.lat])).filter(g=>isFinite(g.pos[0]));gas.at=c;return gas.list}
+  finally{clearTimeout(t)}
+}
+function rideTo(g,close){return planTo(g.pos).then(r=>{route={...r,kind:'Trip',name:g.name};showRoute();close();follow=true;$('recenter').hidden=true;$('blip').classList.remove('free');removeMe();camera(true)})}
+function gasSheet(only){
+  const here=me?me.pos:map.getCenter().toArray();
+  openSheet(`<h2>Gas</h2><p class="msg" id="g-m">${only?'':'Finding gas stations near you…'}</p><div class="results" id="g-res"></div><div class="row" style="margin-top:10px"><button class="btn" data-close>Close</button></div>`,async(root,close)=>{
+    const msg=(t,e)=>{const m=root.querySelector('#g-m');m.textContent=t;m.className='msg'+(e?' err':'')};
+    let near=[],picked=false;
+    const render=(list,searching)=>{
+      near=dedupe(list).map(g=>({...g,d:dist(here,g.pos)})).sort((a,b)=>a.d-b.d).slice(0,8);
+      if(picked)return;
+      root.querySelector('#g-res').innerHTML=near.map((g,i)=>`<button data-i="${i}">${esc(g.name)} · ${(g.d/MI).toFixed(1)} mi<small>${esc(g.addr)||'&nbsp;'}${g.h24?' · open 24/7':''}</small></button>`).join('');
+      root.querySelectorAll('#g-res [data-i]').forEach(b=>b.onclick=()=>{picked=true;msg('Finding a way there…');rideTo(near[+b.dataset.i],close).catch(e=>{picked=false;msg(e.message==='Failed to fetch'?'Can’t reach the route planner. Check your connection.':e.message,true)})});
+      msg(only?'Tap to ride there.':near.length?`Closest first (straight-line miles). Tap one to ride there.${searching?' Looking farther out…':''}`:searching?'Finding gas stations near you…':'No gas stations found nearby.',!near.length&&!searching);
+    };
+    if(only){render([only]);return}
+    const quick=tileGas();render(quick,true);
+    overpassGas(here).then(l=>render([...quick,...l],false)).catch(()=>{if(!picked)msg(near.length?'Closest first (straight-line miles). Tap one to ride there.':'Can’t search for gas right now. Zoom out on the map to load more, or try again in a minute.',!near.length)});
+  });
+}
+$('t-gas').onclick=()=>gasSheet();
+map.on('click','gas',e=>{const f=e.features[0];gasSheet(gasFromTags(f.properties,f.geometry.coordinates))});
+map.on('mouseenter','gas',()=>map.getCanvas().style.cursor='pointer');map.on('mouseleave','gas',()=>map.getCanvas().style.cursor='');
 
 /* ---------------- sheets ---------------- */
 function openSheet(html,onReady){const L=$('layer');L.innerHTML=`<div class="scrim"></div><div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
