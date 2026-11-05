@@ -6,10 +6,11 @@ A GTA V-style radar map for riding a motorcycle around, as a web app for iPhone.
 - GTA radar colors: dark land, grey roads, blue water, green parks, no labels.
 - Go to: search a place and get a motorcycle route there (skips highways and big streets if you want).
 - Gas: pump blips on the map, and a gas button that lists the closest stations and routes you to one.
+- Cameras & police: speed and red-light camera blips with a beep and banner when one is ahead (City of Chicago official list + OpenStreetMap for the rest of Illinois, bundled in `cams.json`), and police station blips.
 - Record rides: time, miles, top and average speed, saved on the phone.
 - Two views: full-screen map, or a GTA-style radar in the corner with big speed.
 
 Open `index.html` through any HTTPS host (GitHub Pages works) on the iPhone, then Share > Add to Home Screen.
 GPS only works over HTTPS. Add `#demo` to the address to try it without GPS.
 
-Map data © OpenStreetMap contributors, tiles from OpenFreeMap, routing by Valhalla (FOSSGIS), search by Nominatim, gas stations via Overpass.
+Map data © OpenStreetMap contributors, tiles from OpenFreeMap, routing by Valhalla (FOSSGIS), search by Nominatim, gas stations via Overpass, camera locations from the City of Chicago Data Portal and OpenStreetMap.

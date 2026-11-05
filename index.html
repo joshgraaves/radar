@@ -119,6 +119,10 @@ input[type=search]{width:100%;font:inherit;font-size:18px;color:var(--ink);backg
 .toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0}
 .toggle input{width:22px;height:22px;accent-color:var(--way)}
 #toast{position:fixed;z-index:30;left:50%;transform:translateX(-50%);top:calc(70px + env(safe-area-inset-top));background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:16px;font-weight:700;max-width:calc(100% - 32px);text-align:center}
+/* camera warning: a red GTA-style alert across the top */
+#camwarn{position:fixed;z-index:7;left:50%;transform:translateX(-50%);top:calc(118px + env(safe-area-inset-top));background:#b3261e;border:2px solid #ff6b5e;border-radius:10px;padding:8px 16px;font:700 22px/1.1 var(--f-hud);letter-spacing:.03em;text-transform:uppercase;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.5);pointer-events:none}
+#camwarn small{display:block;font:500 15px/1.2 var(--f-ui);letter-spacing:.04em;text-align:center;opacity:.9}
+body.radar #camwarn{top:calc(12px + env(safe-area-inset-top))}
 #gate{position:fixed;inset:0;z-index:40;background:radial-gradient(ellipse at 50% 30%,#22292e,#0b0d0e 70%);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;padding:24px;text-align:center}
 #gate h1{font-family:var(--f-hud);font-size:56px;margin:0;letter-spacing:.04em;text-transform:uppercase}
 #gate p{margin:0;color:var(--muted);font-size:18px;max-width:30ch;line-height:1.35}
@@ -156,13 +160,15 @@ input[type=search]{width:100%;font:inherit;font-size:18px;color:var(--ink);backg
 </div>
 <div id="layer"></div>
 <div id="toast" hidden></div>
+<div id="camwarn" hidden role="alert"></div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
 /* ---------------- settings & small helpers ---------------- */
 const $=id=>document.getElementById(id);
 const store={get(k,d){try{const v=localStorage.getItem('radar.'+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem('radar.'+k,JSON.stringify(v))}catch(e){}}};
-const S={view:store.get('view','full'),tilt:store.get('tilt',true),zoom:store.get('zoom',16.2),avoidHw:store.get('avoidHw',true)};
+const S={view:store.get('view','full'),tilt:store.get('tilt',true),zoom:store.get('zoom',16.2),avoidHw:store.get('avoidHw',true),camBeep:store.get('camBeep',true)};
+for(const k of['tilt','camBeep'])if(typeof S[k]==='string')S[k]=S[k]==='true'; // older saves stored these as text
 const MPH=2.236936,MI=1609.344;
 const toRad=d=>d*Math.PI/180,toDeg=r=>r*180/Math.PI;
 function dist(a,b){const R=6371000,dLa=toRad(b[1]-a[1]),dLo=toRad(b[0]-a[0]),x=Math.sin(dLa/2)**2+Math.cos(toRad(a[1]))*Math.cos(toRad(b[1]))*Math.sin(dLo/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
@@ -214,6 +220,14 @@ map.on('load',()=>{
   map.addImage('pump',pumpIcon(),{pixelRatio:2});
   map.addLayer({id:'gas',type:'symbol',source:'omt','source-layer':'poi',minzoom:12.5,filter:['all',['==',['get','class'],'fuel'],['!=',['get','subclass'],'charging_station']],
     layout:{'icon-image':'pump','icon-size':['interpolate',['linear'],['zoom'],12.5,.75,17,1.15],'icon-allow-overlap':true,'icon-pitch-alignment':'viewport','icon-rotation-alignment':'viewport'}});
+  // police stations (from the map tiles) and speed / red-light cameras (from Overpass, cached on the phone)
+  map.addImage('police',badgeIcon('#4c88c9',starPath),{pixelRatio:2});
+  map.addImage('cam',badgeIcon('#ff4d4d',camPath),{pixelRatio:2});
+  map.addLayer({id:'police',type:'symbol',source:'omt','source-layer':'poi',minzoom:12.5,filter:['==',['get','class'],'police'],
+    layout:{'icon-image':'police','icon-size':['interpolate',['linear'],['zoom'],12.5,.7,17,1.05],'icon-allow-overlap':true,'icon-pitch-alignment':'viewport','icon-rotation-alignment':'viewport'}});
+  map.addSource('cams',{type:'geojson',data:camGeo()});
+  map.addLayer({id:'cams',type:'symbol',source:'cams',minzoom:11,
+    layout:{'icon-image':'cam','icon-size':['interpolate',['linear'],['zoom'],11,.7,17,1.15],'icon-allow-overlap':true,'icon-pitch-alignment':'viewport','icon-rotation-alignment':'viewport'}});
   if(route)showRoute();
   // keep the map credit folded into its (i) button so it doesn't cover the road
   const at=document.querySelector('.maplibregl-ctrl-attrib');if(at)at.classList.remove('maplibregl-compact-show');
@@ -253,7 +267,7 @@ function onPos(p){
   me={pos,mph:Math.max(0,mph||0),heading,acc:p.coords.accuracy||0,t:now};lastFix=Date.now();
   store.set('last',pos);
   if(meMarker){meMarker.setLngLat(pos).setRotation(heading)}
-  ride.add(me);camera(false);hud();
+  ride.add(me);camera(false);hud();camTick();
 }
 function onErr(e){
   const m=e.code===1?'Location is blocked. On iPhone: Settings › Privacy & Security › Location Services › Safari Websites › While Using.':e.code===3?'Still looking for GPS…':'Can’t get your location right now.';
@@ -359,11 +373,16 @@ function tileGas(){
 async function overpassGas(c){
   if(gas.at&&dist(gas.at,c)<3000)return gas.list;
   const q=`[out:json][timeout:25];nwr["amenity"="fuel"](around:12000,${c[1].toFixed(5)},${c[0].toFixed(5)});out center tags 200;`;
-  const ac=new AbortController(),t=setTimeout(()=>ac.abort(),45000);
-  try{const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q),signal:ac.signal});
-    if(!r.ok)throw new Error('busy');const j=await r.json();
-    gas.list=j.elements.map(e=>gasFromTags(e.tags||{},e.center?[e.center.lon,e.center.lat]:[e.lon,e.lat])).filter(g=>isFinite(g.pos[0]));gas.at=c;return gas.list}
-  finally{clearTimeout(t)}
+  const j=await overpass(q,45000);
+  gas.list=j.elements.map(e=>gasFromTags(e.tags||{},e.center?[e.center.lon,e.center.lat]:[e.lon,e.lat])).filter(g=>isFinite(g.pos[0]));gas.at=c;return gas.list;
+}
+// OpenStreetMap's Overpass servers are free and often overloaded: try the main one, then the public mirrors
+const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+async function overpass(q,ms){
+  let err;for(const u of OVERPASS){const ac=new AbortController(),t=setTimeout(()=>ac.abort(),ms);
+    try{const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q),signal:ac.signal});
+      if(r.ok)return await r.json();err=new Error('busy')}catch(e){err=e}finally{clearTimeout(t)}}
+  throw err;
 }
 function rideTo(g,close){return planTo(g.pos).then(r=>{route={...r,kind:'Trip',name:g.name};showRoute();close();follow=true;$('recenter').hidden=true;$('blip').classList.remove('free');removeMe();camera(true)})}
 function gasSheet(only){
@@ -387,11 +406,60 @@ $('t-gas').onclick=()=>gasSheet();
 map.on('click','gas',e=>{const f=e.features[0];gasSheet(gasFromTags(f.properties,f.geometry.coordinates))});
 map.on('mouseenter','gas',()=>map.getCanvas().style.cursor='pointer');map.on('mouseleave','gas',()=>map.getCanvas().style.cursor='');
 
+/* ---------------- police & cameras ---------------- */
+// round radar badges: dark disc, colored ring, white symbol
+function badgeIcon(ring,draw){const s=48,c=document.createElement('canvas');c.width=c.height=s;const g=c.getContext('2d');
+  g.fillStyle='#0b0d0e';g.beginPath();g.arc(24,24,21,0,7);g.fill();g.lineWidth=3;g.strokeStyle=ring;g.stroke();g.fillStyle='#fff';g.strokeStyle='#fff';draw(g);return g.getImageData(0,0,s,s)}
+function starPath(g){g.beginPath();for(let i=0;i<10;i++){const r=i%2?5.5:13,a=-Math.PI/2+i*Math.PI/5;g.lineTo(24+r*Math.cos(a),25+r*Math.sin(a))}g.closePath();g.fill()}
+function camPath(g){g.beginPath();g.roundRect(11,17,20,14,3);g.fill();g.beginPath();g.moveTo(31,21);g.lineTo(38,17);g.lineTo(38,31);g.lineTo(31,27);g.closePath();g.fill();g.fillStyle='#0b0d0e';g.beginPath();g.arc(19,24,3.5,0,7);g.fill()}
+// Cameras ship with the app in cams.json (City of Chicago's official list + OpenStreetMap for the rest of Illinois),
+// so alerts work instantly and without signal. Outside that area, OpenStreetMap's Overpass fills in (slow, cached).
+const cams={base:[],list:[],at:null};let camBusy=false,camFailAt=0;
+{const x=store.get('cams2',null);if(x){cams.list=x.list;cams.at=x.at}}
+fetch('cams.json').then(r=>r.json()).then(j=>{cams.base=j.cams.map(([id,lon,lat,red,max,dirs])=>({id,pos:[lon,lat],red:!!red,max,dirs}));const s=map.getSource('cams');if(s)s.setData(camGeo())}).catch(()=>{});
+const allCams=()=>cams.base.concat(cams.list);
+function camGeo(){return{type:'FeatureCollection',features:allCams().map(c=>({type:'Feature',properties:{},geometry:{type:'Point',coordinates:c.pos}}))}}
+const DIRDEG={N:0,E:90,S:180,W:270};
+async function loadCams(c){
+  camBusy=true;
+  const R=25000,a=`(around:${R},${c[1].toFixed(4)},${c[0].toFixed(4)})`;
+  const q=`[out:json][timeout:60];(node["highway"="speed_camera"]${a};node["enforcement"~"maxspeed|traffic_signals"]${a};)->.n;rel["type"="enforcement"]["enforcement"~"maxspeed|traffic_signals"]${a}->.e;.n out;.e out;node(r.e:"device");out;`;
+  try{const j=await overpass(q,70000);
+    const dev={};for(const e of j.elements)if(e.type==='relation')for(const m of e.members)if(m.role==='device'&&m.type==='node')dev[m.ref]={red:e.tags.enforcement==='traffic_signals',max:e.tags.maxspeed};
+    const seen={};for(const e of j.elements){if(e.type!=='node'||seen[e.id])continue;const t=e.tags||{},d=dev[e.id];
+      if(!d&&t.highway!=='speed_camera'&&!t.enforcement)continue;
+      seen[e.id]={id:e.id,pos:[e.lon,e.lat],red:d?d.red:t.enforcement==='traffic_signals',max:(d&&d.max)||t.maxspeed||''}}
+    cams.list=Object.values(seen).filter(o=>!cams.base.some(b=>dist(b.pos,o.pos)<80));cams.at=c;store.set('cams2',{list:cams.list,at:c});const s=map.getSource('cams');if(s)s.setData(camGeo());
+  }catch(e){camFailAt=Date.now()}finally{camBusy=false}
+}
+// warn when a camera is close and roughly ahead; once per camera until you're well past it
+const warned=new Set();
+function camTick(){
+  if(!me)return;
+  // look up OpenStreetMap cameras only where the bundled list has nothing nearby
+  if(!camBusy&&Date.now()-camFailAt>300000&&(!cams.at||dist(cams.at,me.pos)>12000)&&!cams.base.some(b=>dist(b.pos,me.pos)<25000)&&cams.base.length)loadCams(me.pos);
+  let hit=null,hd=1e9;
+  for(const c of allCams()){const d=dist(me.pos,c.pos);if(d>1200){warned.delete(c.id);continue}
+    const reach=Math.max(350,me.mph*14);if(d>reach)continue;
+    if(d>40&&Math.abs(angDiff(me.heading,bearing(me.pos,c.pos)))>40)continue;
+    // Chicago's list says which way each camera faces: skip it if you're not traveling that way
+    if(c.dirs&&![...c.dirs].some(k=>Math.abs(angDiff(me.heading,DIRDEG[k]))<55))continue;
+    if(d<hd){hd=d;hit=c}}
+  const el=$('camwarn');
+  if(!hit){el.hidden=true;return}
+  el.innerHTML=`${hit.red?'Red light cam':'Speed cam'}${hit.max?' · '+esc(hit.max.replace(' mph','')):''}<small>${hd<60?'here':(hd/MI).toFixed(1)+' mi ahead'}</small>`;el.hidden=false;
+  if(!warned.has(hit.id)){warned.add(hit.id);if(S.camBeep)beep()}
+}
+let actx=null;
+function unlockAudio(){try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();actx.resume()}catch(e){}}
+['touchend','click'].forEach(ev=>document.addEventListener(ev,unlockAudio,{once:true,capture:true}));
+function beep(){if(!actx)return;try{[0,.22].forEach(dt=>{const t=actx.currentTime+dt,o=actx.createOscillator(),g=actx.createGain();o.type='square';o.frequency.value=1250;g.gain.setValueAtTime(.12,t);g.gain.exponentialRampToValueAtTime(.001,t+.16);o.connect(g).connect(actx.destination);o.start(t);o.stop(t+.17)})}catch(e){}}
+
 /* ---------------- sheets ---------------- */
 function openSheet(html,onReady){const L=$('layer');L.innerHTML=`<div class="scrim"></div><div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
   const close=()=>{L.innerHTML=''};L.querySelector('.scrim').onclick=close;L.querySelectorAll('[data-close]').forEach(b=>b.onclick=close);onReady&&onReady(L.querySelector('.sheet'),close);return close}
 const seg=(key,opts)=>`<div class="seg" role="group">${opts.map(([v,l])=>`<button data-set="${key}" data-v="${v}" aria-pressed="${String(S[key])===String(v)}">${l}</button>`).join('')}</div>`;
-function wireSeg(root,after){root.querySelectorAll('[data-set]').forEach(b=>b.onclick=()=>{const k=b.dataset.set,v=b.dataset.v;S[k]=isNaN(+v)?v:+v;store.set(k,S[k]);root.querySelectorAll(`[data-set="${k}"]`).forEach(x=>x.setAttribute('aria-pressed',x===b));after&&after(k)})}
+function wireSeg(root,after){root.querySelectorAll('[data-set]').forEach(b=>b.onclick=()=>{const k=b.dataset.set,v=b.dataset.v;S[k]=v==='true'?true:v==='false'?false:isNaN(+v)?v:+v;store.set(k,S[k]);root.querySelectorAll(`[data-set="${k}"]`).forEach(x=>x.setAttribute('aria-pressed',x===b));after&&after(k)})}
 
 // go to a place: search OpenStreetMap (Nominatim) near you, tap a result to get a route there
 $('t-route').onclick=()=>openSheet(`<h2>Go to</h2>
@@ -416,9 +484,10 @@ function applyView(){document.body.classList.toggle('radar',S.view==='radar');$(
 $('t-more').onclick=()=>{const rides=store.get('rides',[]);openSheet(`<h2>Rides</h2>
   ${rides.length?rides.slice(0,12).map((r,i)=>`<div class="ride"><div>${new Date(r.at).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}<br><span>${r.mins} min · avg ${r.avg} mph · top ${r.top}</span></div><div style="display:flex;gap:6px;align-items:center"><b>${r.miles} mi</b><button class="btn" data-show="${i}" style="padding:6px 10px;font-size:15px">Show</button></div></div>`).join(''):'<p>No rides saved yet. Tap the record button to save one.</p>'}
   <div class="grp"><span class="lbl">Map</span>${seg('tilt',[[true,'3D tilt'],[false,'Flat']])}</div>
+  <div class="grp"><span class="lbl">Camera alerts</span>${seg('camBeep',[[true,'Beep'],[false,'Silent']])}</div>
   <div class="grp"><span class="lbl">Zoom</span>${seg('zoom',[[17.2,'Close'],[16.2,'Normal'],[15,'Far']])}</div>
   <div class="row" style="margin-top:12px"><button class="btn" id="m-demo">${demo?'Stop demo ride':'Demo ride'}</button><button class="btn" data-close>Done</button></div>
-  <p class="msg" style="margin-top:10px">Map data © OpenStreetMap contributors, tiles by OpenFreeMap, routes by Valhalla (FOSSGIS).</p>`,(root,close)=>{
+  <p class="msg" style="margin-top:10px">Map data © OpenStreetMap contributors, tiles by OpenFreeMap, routes by Valhalla (FOSSGIS). Cameras: City of Chicago Data Portal + OpenStreetMap; not every camera is listed.</p>`,(root,close)=>{
   wireSeg(root,()=>camera(true));
   root.querySelectorAll('[data-show]').forEach(b=>b.onclick=()=>{const r=rides[+b.dataset.show];if(r.path&&r.path.length>1){route={coords:r.path,miles:r.miles,secs:r.mins*60,name:'Past ride'};showRoute();fit(r.path)}close()});
   root.querySelector('#m-demo').onclick=()=>{close();demo?stopDemo():startDemo()};
