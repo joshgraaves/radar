@@ -140,7 +140,7 @@ input[type=search]{width:100%;font:inherit;font-size:18px;color:var(--ink);backg
 <button id="recenter" hidden>Recenter</button>
 
 <div id="tools">
-  <button class="tb" id="t-route" aria-label="Plan a fun ride"><svg viewBox="0 0 24 24"><circle cx="6" cy="19" r="2.5"/><path d="M8.5 19H16a3.5 3.5 0 0 0 0-7H8a3.5 3.5 0 0 1 0-7h7.5"/><path d="M18 5l2 0" /><circle cx="18" cy="5" r="2"/></svg></button>
+  <button class="tb" id="t-route" aria-label="Go to a place"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/></svg></button>
   <button class="tb" id="t-gas" aria-label="Nearest gas"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="10" height="18" rx="1.5"/><path d="M7 7h4v4H7zM2.5 21h13M14 9h2a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 0 3 0V8l-3-3"/></svg></button>
   <button class="tb rec" id="t-rec" aria-label="Record ride"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></button>
   <button class="tb" id="t-view" aria-label="Switch full map / radar"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><rect x="5.5" y="11" width="8" height="6.5" rx="1.5"/></svg></button>
@@ -162,7 +162,7 @@ input[type=search]{width:100%;font:inherit;font-size:18px;color:var(--ink);backg
 /* ---------------- settings & small helpers ---------------- */
 const $=id=>document.getElementById(id);
 const store={get(k,d){try{const v=localStorage.getItem('radar.'+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem('radar.'+k,JSON.stringify(v))}catch(e){}}};
-const S={view:store.get('view','full'),tilt:store.get('tilt',true),zoom:store.get('zoom',16.2),avoidHw:store.get('avoidHw',true),rideMin:store.get('rideMin',45),dir:store.get('dir','any')};
+const S={view:store.get('view','full'),tilt:store.get('tilt',true),zoom:store.get('zoom',16.2),avoidHw:store.get('avoidHw',true)};
 const MPH=2.236936,MI=1609.344;
 const toRad=d=>d*Math.PI/180,toDeg=r=>r*180/Math.PI;
 function dist(a,b){const R=6371000,dLa=toRad(b[1]-a[1]),dLo=toRad(b[0]-a[0]),x=Math.sin(dLa/2)**2+Math.cos(toRad(a[1]))*Math.cos(toRad(b[1]))*Math.sin(dLo/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
@@ -313,9 +313,9 @@ function stats(){
 }
 setInterval(()=>{if(ride.on)stats();if(me&&Date.now()-lastFix>20000&&!demo)$('st-area').textContent='Weak GPS signal'},1000);
 
-/* ---------------- fun ride routes ---------------- */
+/* ---------------- routes ---------------- */
 // Valhalla (free, OpenStreetMap) with its motorcycle profile: we nudge it off highways and big roads toward
-// smaller, curvier ones. A loop ride is planned through a few points on a circle around you.
+// smaller, curvier ones.
 let route=null;
 const VALHALLA='https://valhalla1.openstreetmap.de/route';
 function decode6(s){let i=0,lat=0,lon=0;const out=[];while(i<s.length){for(const k of[0,1]){let r=0,sh=0,b;do{b=s.charCodeAt(i++)-63;r|=(b&31)<<sh;sh+=5}while(b>=32);const d=r&1?~(r>>1):r>>1;if(k===0)lat+=d;else lon+=d}out.push([lon/1e6,lat/1e6])}return out}
@@ -326,18 +326,6 @@ async function valhalla(locs){
   const j=await r.json();if(!r.ok||!j.trip)throw new Error(j.error||'No route found');
   const coords=j.trip.legs.flatMap(l=>decode6(l.shape));
   return{coords,miles:j.trip.summary.length,secs:j.trip.summary.time};
-}
-const DIRS={any:null,N:0,E:90,S:180,W:270};
-async function planLoop(){
-  const here=me?me.pos:map.getCenter().toArray();
-  // ride length from minutes at ~19 mph average (what the router expects on back roads); roads run ~1.3x longer than the circle
-  const miles=S.rideMin/60*19,R=miles*MI/(2*Math.PI)/1.3;
-  const head=DIRS[S.dir]??Math.random()*360,back=(head+180)%360,n=4,sweep=Math.random()<.5?1:-1;
-  const jit=[...Array(n)].map(()=>[Math.random()*24-12,0.85+Math.random()*.3]);
-  const loop=r=>{const center=dest(here,head,r),pts=[here];for(let i=1;i<=n;i++)pts.push(dest(center,back+sweep*i*360/(n+1)+jit[i-1][0],r*jit[i-1][1]));pts.push(here);return valhalla(pts)};
-  // city streets are slow: if the first try runs long, shrink the circle to fit the time you picked
-  let r=await loop(R);const want=S.rideMin*60;if(r.secs>want*1.3)r=await loop(R*Math.max(.35,want/r.secs));
-  return r;
 }
 async function planTo(target){const here=me?me.pos:map.getCenter().toArray();return valhalla([here,target])}
 function showRoute(){const s=map.getSource('route');if(s)s.setData(route?{type:'Feature',geometry:{type:'LineString',coordinates:route.coords}}:{type:'FeatureCollection',features:[]});
@@ -405,29 +393,20 @@ function openSheet(html,onReady){const L=$('layer');L.innerHTML=`<div class="scr
 const seg=(key,opts)=>`<div class="seg" role="group">${opts.map(([v,l])=>`<button data-set="${key}" data-v="${v}" aria-pressed="${String(S[key])===String(v)}">${l}</button>`).join('')}</div>`;
 function wireSeg(root,after){root.querySelectorAll('[data-set]').forEach(b=>b.onclick=()=>{const k=b.dataset.set,v=b.dataset.v;S[k]=isNaN(+v)?v:+v;store.set(k,S[k]);root.querySelectorAll(`[data-set="${k}"]`).forEach(x=>x.setAttribute('aria-pressed',x===b));after&&after(k)})}
 
-$('t-route').onclick=()=>openSheet(`<h2>Fun ride</h2><p>Plans a loop on back roads from where you are, skipping highways and the biggest streets.</p>
-  <div class="grp"><span class="lbl">How long</span>${seg('rideMin',[[20,'20 min'],[45,'45 min'],[75,'75 min'],[120,'2 hr']])}</div>
-  <div class="grp"><span class="lbl">Head toward</span>${seg('dir',[['any','Any'],['N','N'],['E','E'],['S','S'],['W','W']])}</div>
-  <label class="toggle"><span>Avoid highways &amp; big roads</span><input type="checkbox" id="f-hw" ${S.avoidHw?'checked':''}></label>
-  <div class="summary" id="f-sum" hidden></div>
-  <p class="msg" id="f-msg"></p>
-  <div class="row"><button class="btn" id="f-plan">Plan a loop</button><button class="btn go" id="f-go" disabled>Ride it</button></div>
-  <div class="grp" style="margin-top:22px"><label for="f-q">Or ride to a place</label><input type="search" id="f-q" placeholder="Search a place, e.g. Starved Rock" autocomplete="off"><div class="results" id="f-res"></div></div>`,(root,close)=>{
-  wireSeg(root);let draft=null;
+// go to a place: search OpenStreetMap (Nominatim) near you, tap a result to get a route there
+$('t-route').onclick=()=>openSheet(`<h2>Go to</h2>
+  <input type="search" id="f-q" placeholder="Search a place, e.g. Starved Rock" autocomplete="off">
+  <p class="msg" id="f-msg" style="margin-top:8px"></p><div class="results" id="f-res"></div>
+  <label class="toggle"><span>Avoid highways &amp; big roads</span><input type="checkbox" id="f-hw" ${S.avoidHw?'checked':''}></label>`,(root,close)=>{
   root.querySelector('#f-hw').onchange=e=>{S.avoidHw=e.target.checked;store.set('avoidHw',S.avoidHw)};
   const msg=(t,err)=>{const m=root.querySelector('#f-msg');m.textContent=t;m.className='msg'+(err?' err':'')};
-  const show=r=>{draft=r;const s=root.querySelector('#f-sum');s.hidden=false;s.innerHTML=`<div><b>${r.miles.toFixed(1)}</b><small>miles</small></div><div><b>${fmtMin(r.secs)}</b><small>time</small></div><div><b>${r.kind}</b><small>type</small></div>`;
-    root.querySelector('#f-go').disabled=false;route={...r};showRoute();fit(r.coords)};
-  const busy=async(fn,label)=>{msg(label);root.querySelectorAll('.btn').forEach(b=>b.disabled=true);try{show(await fn())}catch(e){msg(e.message==='Failed to fetch'?'Can’t reach the route planner. Check your connection.':e.message,true)}finally{root.querySelectorAll('.btn').forEach(b=>b.disabled=false);if(!draft)root.querySelector('#f-go').disabled=true;if(draft)msg('Tap Plan a loop again for a different one.')}};
-  root.querySelector('#f-plan').onclick=()=>busy(async()=>({...(await planLoop()),kind:'Loop',name:'Fun loop'}),'Finding a good loop…');
-  root.querySelector('#f-go').onclick=()=>{if(!draft)return;route={...draft};showRoute();close();follow=true;$('recenter').hidden=true;$('blip').classList.remove('free');removeMe();camera(true);if(!ride.on)ride.begin()};
-  // place search: OpenStreetMap's Nominatim, near where you are
   let qT;root.querySelector('#f-q').oninput=e=>{clearTimeout(qT);const q=e.target.value.trim();if(q.length<3){root.querySelector('#f-res').innerHTML='';return}
     qT=setTimeout(async()=>{try{const c=me?me.pos:map.getCenter().toArray();
       const r=await (await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}&viewbox=${c[0]-1.5},${c[1]+1},${c[0]+1.5},${c[1]-1}`)).json();
-      root.querySelector('#f-res').innerHTML=r.map((x,i)=>`<button data-i="${i}">${x.name||x.display_name.split(',')[0]}<small>${x.display_name}</small></button>`).join('')||'<p class="msg">Nothing found.</p>';
-      root.querySelectorAll('#f-res [data-i]').forEach(b=>b.onclick=()=>{const x=r[+b.dataset.i];busy(async()=>({...(await planTo([+x.lon,+x.lat])),kind:'Trip',name:x.name||'Trip'}),'Finding a fun way there…')});
+      root.querySelector('#f-res').innerHTML=r.map((x,i)=>`<button data-i="${i}">${esc(x.name||x.display_name.split(',')[0])}<small>${esc(x.display_name)}</small></button>`).join('')||'<p class="msg">Nothing found.</p>';
+      root.querySelectorAll('#f-res [data-i]').forEach(b=>b.onclick=()=>{const x=r[+b.dataset.i];msg('Finding a way there…');rideTo({pos:[+x.lon,+x.lat],name:x.name||x.display_name.split(',')[0]},close).catch(e=>msg(e.message==='Failed to fetch'?'Can’t reach the route planner. Check your connection.':e.message,true))});
     }catch(err){root.querySelector('#f-res').innerHTML='<p class="msg err">Search isn’t reachable right now.</p>'}},450)};
+  setTimeout(()=>root.querySelector('#f-q').focus(),50);
 });
 
 $('t-rec').onclick=()=>ride.on?ride.end():ride.begin();
