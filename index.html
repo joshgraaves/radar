@@ -263,7 +263,8 @@ function onPos(p){
   const pos=[p.coords.longitude,p.coords.latitude],now=p.timestamp||Date.now();
   let mph=p.coords.speed!=null&&p.coords.speed>=0?p.coords.speed*MPH:null,heading=p.coords.heading;
   if(me){const d=dist(me.pos,pos),dt=(now-me.t)/1000;if(mph==null&&dt>0)mph=d/dt*MPH;if((heading==null||isNaN(heading))&&d>3)heading=bearing(me.pos,pos)}
-  if(heading==null||isNaN(heading)||(mph||0)<2)heading=me?me.heading:0; // hold the heading when stopped
+  // under walking speed GPS can't tell direction, so use the phone's compass (or hold the last heading)
+  if(heading==null||isNaN(heading)||(mph||0)<SLOW)heading=compassOk()?compass:me?me.heading:0;
   me={pos,mph:Math.max(0,mph||0),heading,acc:p.coords.accuracy||0,t:now};lastFix=Date.now();
   store.set('last',pos);
   if(meMarker){meMarker.setLngLat(pos).setRotation(heading)}
@@ -277,6 +278,34 @@ function startGps(){
   if(!navigator.geolocation){onErr({code:2});return}
   watchId=navigator.geolocation.watchPosition(onPos,onErr,{enableHighAccuracy:true,maximumAge:0,timeout:15000});
 }
+
+/* ---------------- compass ---------------- */
+// the phone's compass points the arrow and map the way the top of the phone faces when you're stopped or slow
+const SLOW=6;let compass=null,compassAt=0,compassCam=0;
+const compassOk=()=>compass!=null&&Date.now()-compassAt<3000;
+function onOrient(e){
+  let h=e.webkitCompassHeading;
+  if(h==null&&e.absolute&&e.alpha!=null)h=360-e.alpha;
+  if(h==null||isNaN(h))return;
+  h=(h+((screen.orientation&&screen.orientation.angle)||window.orientation||0)+360)%360;
+  compass=compass==null?h:(compass+angDiff(compass,h)*.3+360)%360;compassAt=Date.now();
+  if(!me||demo||me.mph>=SLOW)return;
+  me.heading=compass;
+  if(meMarker)meMarker.setRotation(compass);
+  if(follow){
+    $('blip').querySelector('svg').style.transform=`rotate(${compass-map.getBearing()}deg)`;
+    if(Date.now()-compassCam>250&&Math.abs(angDiff(map.getBearing(),compass))>3){compassCam=Date.now();map.easeTo({bearing:compass,duration:250,easing:t=>t})}
+  }
+}
+let compassOn=false,compassAsked=false;
+function startCompass(){
+  if(compassOn||compassAsked)return;compassAsked=true;
+  const listen=()=>{compassOn=true;addEventListener('deviceorientationabsolute',onOrient);addEventListener('deviceorientation',onOrient)};
+  const D=window.DeviceOrientationEvent;if(!D)return;
+  // iPhone asks permission, and only from a tap
+  if(typeof D.requestPermission==='function')D.requestPermission().then(r=>{if(r==='granted')listen()}).catch(()=>{});else listen();
+}
+['touchend','click'].forEach(ev=>document.addEventListener(ev,startCompass,{capture:true}));
 
 /* ---------------- HUD ---------------- */
 let lastStreetAt=0;
