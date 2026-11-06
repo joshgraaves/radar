@@ -167,8 +167,8 @@ body.radar #camwarn{top:calc(12px + env(safe-area-inset-top))}
 /* ---------------- settings & small helpers ---------------- */
 const $=id=>document.getElementById(id);
 const store={get(k,d){try{const v=localStorage.getItem('radar.'+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem('radar.'+k,JSON.stringify(v))}catch(e){}}};
-const S={view:store.get('view','full'),tilt:store.get('tilt',true),zoom:store.get('zoom',16.2),avoidHw:store.get('avoidHw',true),camBeep:store.get('camBeep',true)};
-for(const k of['tilt','camBeep'])if(typeof S[k]==='string')S[k]=S[k]==='true'; // older saves stored these as text
+const S={view:store.get('view','full'),tilt:store.get('tilt',true),zoom:store.get('zoom',16.2),avoidHw:store.get('avoidHw',true),camBeep:store.get('camBeep',true),compass:store.get('compass',false)};
+for(const k of['tilt','camBeep','compass'])if(typeof S[k]==='string')S[k]=S[k]==='true'; // older saves stored these as text
 const MPH=2.236936,MI=1609.344;
 const toRad=d=>d*Math.PI/180,toDeg=r=>r*180/Math.PI;
 function dist(a,b){const R=6371000,dLa=toRad(b[1]-a[1]),dLo=toRad(b[0]-a[0]),x=Math.sin(dLa/2)**2+Math.cos(toRad(a[1]))*Math.cos(toRad(b[1]))*Math.sin(dLo/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
@@ -284,6 +284,7 @@ function startGps(){
 const SLOW=6;let compass=null,compassAt=0,compassCam=0;
 const compassOk=()=>compass!=null&&Date.now()-compassAt<3000;
 function onOrient(e){
+  if(!S.compass){compass=null;return}
   let h=e.webkitCompassHeading;
   if(h==null&&e.absolute&&e.alpha!=null)h=360-e.alpha;
   if(h==null||isNaN(h))return;
@@ -303,9 +304,14 @@ function startCompass(){
   const listen=()=>{compassOn=true;addEventListener('deviceorientationabsolute',onOrient);addEventListener('deviceorientation',onOrient)};
   const D=window.DeviceOrientationEvent;if(!D)return;
   // iPhone asks permission, and only from a tap
-  if(typeof D.requestPermission==='function')D.requestPermission().then(r=>{if(r==='granted')listen()}).catch(()=>{});else listen();
+  if(typeof D.requestPermission==='function')D.requestPermission().then(r=>{unshift();if(r==='granted')listen();else toast('Compass blocked: Settings › Apps › Safari › Motion & Orientation Access',5000)}).catch(()=>{});else listen();
 }
-['touchend','click'].forEach(ev=>document.addEventListener(ev,startCompass,{capture:true}));
+// only when turned on in the menu (iPhone asks for Motion once each time the app opens)
+['touchend','click'].forEach(ev=>document.addEventListener(ev,()=>{if(S.compass)startCompass()},{capture:true}));
+// iOS can leave the page scrolled after a system popup, which makes taps land off the buttons; snap it back
+const unshift=()=>{if(scrollX||scrollY||document.documentElement.scrollTop||document.body.scrollTop){scrollTo(0,0);document.documentElement.scrollTop=document.body.scrollTop=0}};
+['scroll','resize','focus','pageshow'].forEach(ev=>addEventListener(ev,unshift));document.addEventListener('visibilitychange',unshift);
+if(window.visualViewport)visualViewport.addEventListener('resize',unshift);
 
 /* ---------------- HUD ---------------- */
 let lastStreetAt=0;
@@ -513,11 +519,12 @@ function applyView(){document.body.classList.toggle('radar',S.view==='radar');$(
 $('t-more').onclick=()=>{const rides=store.get('rides',[]);openSheet(`<h2>Rides</h2>
   ${rides.length?rides.slice(0,12).map((r,i)=>`<div class="ride"><div>${new Date(r.at).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}<br><span>${r.mins} min · avg ${r.avg} mph · top ${r.top}</span></div><div style="display:flex;gap:6px;align-items:center"><b>${r.miles} mi</b><button class="btn" data-show="${i}" style="padding:6px 10px;font-size:15px">Show</button></div></div>`).join(''):'<p>No rides saved yet. Tap the record button to save one.</p>'}
   <div class="grp"><span class="lbl">Map</span>${seg('tilt',[[true,'3D tilt'],[false,'Flat']])}</div>
+  <div class="grp"><span class="lbl">Compass when stopped</span>${seg('compass',[[true,'On'],[false,'Off']])}</div>
   <div class="grp"><span class="lbl">Camera alerts</span>${seg('camBeep',[[true,'Beep'],[false,'Silent']])}</div>
   <div class="grp"><span class="lbl">Zoom</span>${seg('zoom',[[17.2,'Close'],[16.2,'Normal'],[15,'Far']])}</div>
   <div class="row" style="margin-top:12px"><button class="btn" id="m-demo">${demo?'Stop demo ride':'Demo ride'}</button><button class="btn" data-close>Done</button></div>
   <p class="msg" style="margin-top:10px">Map data © OpenStreetMap contributors, tiles by OpenFreeMap, routes by Valhalla (FOSSGIS). Cameras: City of Chicago Data Portal + OpenStreetMap; not every camera is listed.</p>`,(root,close)=>{
-  wireSeg(root,()=>camera(true));
+  wireSeg(root,k=>{if(k==='compass'&&S.compass){compassAsked=false;startCompass()}camera(true)});
   root.querySelectorAll('[data-show]').forEach(b=>b.onclick=()=>{const r=rides[+b.dataset.show];if(r.path&&r.path.length>1){route={coords:r.path,miles:r.miles,secs:r.mins*60,name:'Past ride'};showRoute();fit(r.path)}close()});
   root.querySelector('#m-demo').onclick=()=>{close();demo?stopDemo():startDemo()};
 })};
